@@ -1,1 +1,206 @@
+----------------------------------------------------------------------
+--                            Three-valued AND-NOT  operators       --
+----------------------------------------------------------------------
+
+-- Three-valued and
+node and_3v (phi1_T, phi1_F, phi2_T, phi2_F : bool) returns (and_3v_T , and_3v_F : bool) ;
+let
+	and_3v_T = (phi1_T and not phi1_F) and (phi2_T and not phi2_F);
+	and_3v_F = (not phi1_T and phi1_F) or  (not phi2_T and phi2_F);
+tel
+
+-- Three-valued not
+node not_3v (phi1_T, phi1_F : bool) returns (not_3v_T , not_3v_F : bool) ;
+let
+	not_3v_T = if (not phi1_T and phi1_F) then true else false ;
+	not_3v_F = if (phi1_T and not phi1_F) then true else false ;
+tel
+
+----------------------------------------------------------------------
+--                            Past-time fragment operators          --
+----------------------------------------------------------------------
+
+-- Since operator
+node since (phi1,phi2: bool) returns (out: bool);
+let
+	out = (phi1) -> (  phi1 and (not phi2) ) ;
+tel
+
+----------------------------------------------------------------------
+--                          Future-time fragment operators          --
+----------------------------------------------------------------------
+
+-- The version of the nodes by Bellanger et at. [DOI: 10.4204/eptcs.395.14]
+-- Originally, all a,b of intervals [a,b] are constants, which is not applicable to monitoring.
+-- We change a,b to variables
+
+-- Eventually
+
+-- Eventually  operator
+node eventually_3v_var( a,b:int; phi: bool)
+  returns (output_ev_true, output_ev_false: bool);
+let
+  output_ev_true = eventually_true_var(a,b,phi);
+  output_ev_false = eventually_false_var(a,b,phi);
+tel
+
+-- Eventually True:
+-- true when we are sure that property is satisfied
+node eventually_true_var ( a,b: int ; phi: bool)
+             returns (output_ev_true: bool);
+let
+   output_ev_true = exist_var (timeab_var (a, b), phi);
+tel
+
+-- Eventually False: 
+-- true when we are sure that property is not satisfied
+node eventually_false_var ( a,b: int ; phi: bool) 
+returns (output_ev_false: bool);
+var ev_time: int;
+let
+    ev_time = min(0 -> pre ev_time + 1, b);
+
+    output_ev_false = (ev_time = b) and  
+    (forall_a_var (timeab_var (a,b), not phi));
+tel
+
+
+-- Always
+
+-- Always operator
+node always_3v_var ( a,b:int; phi: bool)
+  returns (output_alw_true, output_alw_false: bool);
+
+let  
+    output_alw_true = always_true_var(a,b,phi);
+    output_alw_false = always_false_var(a,b,phi);
+tel
+
+-- Always True:
+-- true when we are sure that property is satisfied
+node always_true_var (a,b: int ; phi: bool) returns (output_alw_true: bool);
+var alw_time: int;
+let
+    alw_time = min(0 -> pre alw_time + 1, b);
+
+    output_alw_true = (alw_time = b) and 
+    (forall_a ( timeab_var(a,b), phi ) );
+tel
+
+-- Always False: 
+-- true when we are sure that property is not satisfied
+node always_false_var (a,b: int ; phi: bool) returns (output_alw_false: bool);
+var alw_time: int;
+let 
+   alw_time = min(0 -> pre alw_time + 1, b);
+   
+   output_alw_false = exist (timeab_var(a, b), not phi);
+tel
+
+
+-- Until
+
+-- Until operator
+node until_3v_var(a,b:int; phi1, phi2: bool)
+  returns (output_unt_true, output_unt_false: bool);
+let  
+    output_unt_true = until_true(a,b,phi1, phi2);
+    output_unt_false = until_false(a,b,phi1, phi2);
+tel
+
+-- Until True
+-- true when we are sure that property is satisfied
+node until_true (a,b: int ; phi1, phi2: bool) returns (result_until_true: bool);
+var until_time: int;
+let
+    -- internal clock
+    until_time = min(0 -> pre until_time + 1, b);
+
+    -- intialisation (case t=0)
+    result_until_true = 
+    (phi1 and phi2 and (a=0)) ->
+    
+    -- we are at least at time a
+    (until_time >= a and
+    -- there exists an instant when
+    (exist_var(timeab_var(a,b), 
+    -- phi2 is true and until this moment phi1 is true
+    ((phi2) and forall_a_var(timeab_var(0,b),phi1)))));   
+tel
+
+
+-- Until False
+-- True when we are sure that until property is not satisfied
+node until_false (const a,b: int ; phi1, phi2: bool) returns (result_until_false: bool);
+var until_time: int;
+let
+    -- internal clock
+    until_time = min(0 -> pre until_time + 1, b);
+
+    -- init t=0 : until is violated if phi1 is false
+    result_until_false = not phi1 ->
+
+    -- violated if phi1 false before a
+    ((until_time <= a) and (not phi1)) or
+    -- violated if phi2 is never reached during the time interval
+    ((until_time >= b) and not (exist(timeab(a,b), 
+    -- phi2 is true and until this moment phi1 is true
+    ((phi2) and forall_a(timeab(0,b),phi1))))) or
+    -- violated if we are in the time interval...
+    (until_time > a and until_time <= b and 
+    -- ... and there is a moment where phi1 is false and phi2 was never true
+    exist(timeab(a,b), not phi1) and not (exist(timeab(a,b), 
+    -- phi2 is true and until this moment phi1 is true
+    ((phi2) and forall_a(timeab(0,b),phi1)))))
+    -- still violated if it was violated once in the past
+    or pre result_until_false;
+tel
+
+
+----------------------------------------------------------------------
+--                      Useful nodes                                --
+----------------------------------------------------------------------
+
+-- returns the absolute value of our signal
+node absolute_value (x: real) returns (abs: real)
+let
+    abs = if x >= 0.0 then x 
+          else -x;
+tel
+
+-- returns min of integers
+node min (a,b: int) returns (valeur_min: int);
+let
+    valeur_min =
+        if a <= b then a
+        else b;
+tel
+
+-- checks if the internal clock is in the interval
+node timeab_tmp_var ( a,b: int) returns (internal_clk: int;
+     		       	    	 	  inside_time_interval: bool);
+let
+    internal_clk = min((0 -> 1 + pre internal_clk), b);
+    inside_time_interval = (internal_clk >= a) and not ((-1 -> pre internal_clk) = b);
+tel
+
+-- hides internal clock
+node timeab_var (a,b: int) returns (inside_time_interval: bool);
+var iclk: int; 
+let
+   iclk, inside_time_interval = timeab_tmp_var(a,b);
+tel
+
+-- exists quantifier
+node exist_var (inside_time_interval: bool ; prop: bool) returns (output: bool);
+let
+    output = (inside_time_interval and prop); 
+tel
+
+-- forall quantifier
+node forall_a_var (inside_time_interval: bool ; prop: bool) returns (output: bool);
+let 
+    output = not(exist_var(inside_time_interval, not prop));
+tel
+
 

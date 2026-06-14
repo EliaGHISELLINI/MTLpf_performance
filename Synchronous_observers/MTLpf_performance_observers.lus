@@ -1,0 +1,342 @@
+-- for temporal operators and other useful nodes, please refer to the other dedicated files
+
+----------------------------------------------------------------------
+--           Trigger and trigger events observers                   --
+----------------------------------------------------------------------
+
+-- general formulation of the trigger
+-- the argument of the since is enriched with conditions for the correct reset - needed in monitoring
+node trigger_general_rt (ev_ON,ev_OFF: bool; r: real) returns (trigger_out: bool) ;
+let
+	trigger_out = false ->  since( ((ev_ON and reset_tr_ON(ev_OFF,r)) or (pre trigger_out)), ev_OFF ) and ( condition_R(r) );
+tel
+
+
+-- trigger_on overshoot
+node trigger_on_overshoot ( p_trigger: bool ; ref, sys: real ) returns ( trigger: bool ) ;
+let
+	trigger =  ( not p_trigger ) and ( signal_crossing(ref,sys) ) ;
+tel
+
+-- trigger_off overshoot 
+node trigger_off_overshoot ( p_trigger: bool ; ref, sys: real ) returns ( trigger: bool ) ;
+let
+	trigger = ( p_trigger ) and ( signal_crossing(ref,sys) ) ;
+tel
+
+-- trigger_on rise time
+node trigger_on_rise_time ( p_trigger: bool ; ref, sys: real;  bound: real ) returns ( trigger: bool ) ;
+let
+	trigger = false -> ( not p_trigger ) and (absolute_value ( ref - sys ) > bound ) and
+	 ( absolute_value ( sys - ref )  < ( pre absolute_value ( sys - ref ) ) ) ;
+tel
+
+-- trigger_off_rise_time - Version with the bound
+node trigger_off_rise_time ( p_trigger: bool ; ref, sys: real ;  bound: real ) returns ( trigger: bool ) ;
+let
+	trigger = false -> ( p_trigger ) and ( (pre absolute_value(ref - sys) ) < bound )  ;
+tel
+
+-- trigger_on settling time
+node trigger_on_settling_time ( p_trigger: bool ; ref, sys: real;  bound: real ) returns ( trigger: bool ) ;
+let
+	trigger = false ->  ( not p_trigger ) and ( absolute_value ( sys - ref ) > bound ) and ( absolute_value ( sys - ref )  <= (pre absolute_value ( sys - ref )) ) ;
+tel
+
+-- trigger_off settling time
+node trigger_off_settling_time ( time, t_st,  delta_st : int ) returns ( trigger: bool ) ;
+let
+	trigger = (time =  (t_st +  delta_st)) ;
+tel
+
+----------------------------------------------------------------------
+--           Performance properties observers                       --
+----------------------------------------------------------------------
+
+----------------------------------------------------------------------
+--                     Transient behaviours                         --
+----------------------------------------------------------------------
+
+-- overshoot verification.
+node overshoot_verification ( ref, sys, bound : real ; a, t_st : int ) returns ( trigger:bool ; eval_out: real ) ;
+var
+	always_3v_T,always_3v_F: bool;
+	eval : real;
+let
+	always_3v_T = always_true_var(a,t_st,(absolute_value ( sys-ref ) <= bound)) ;
+	always_3v_F = always_false_var(a,t_st,(absolute_value ( sys-ref ) <= bound)) ;
+	trigger = trigger_general( trigger_on_overshoot ( pre trigger, ref, sys),
+	     		      trigger_off_overshoot (pre trigger, ref, sys),
+			      ref ) ;
+	eval = if (trigger ) then (
+	       if (not always_3v_T) then (
+	     	  if (not always_3v_F)
+		   	then ( 0.5 ) --Unknown
+	     	   	else (0.0) --False
+		   )
+	     	else ( 1.0 ) --True
+	     )
+	     else (  --trigger not active
+	     	  if ((pre trigger) and ((pre eval)=0.5)) --weak view for Always
+		  then (1.0)
+		  else (0.25)
+	     ); 
+
+	eval_out = eval -> if (trigger and (eval = 0.0 or pre eval_out = 0.0))
+		   	   then (0.0)
+		   	   else (eval) ;
+
+tel
+
+
+-- rise time verification.
+node rise_time_verification ( ref, sys : real ; bound : real ; time_rt, time_step : int ) returns (  trigger: bool ; eval_out: real) ;
+
+var 
+  eventually_3v_T, eventually_3v_F, ev_ON, ev_OFF : bool ;
+  time_step_reset : int ;
+  	eval : real;
+	
+let
+	
+	ev_ON = trigger_on_rise_time ( pre trigger, ref, sys, bound) ;
+	ev_OFF = trigger_off_rise_time (pre trigger, ref, sys, bound) ;
+	trigger = false -> trigger_general_rt(ev_ON, ev_OFF, ref) ;
+
+	time_step_reset = (0 -> if (not (condition_R (ref)) ) then time_step else (pre time_step_reset) ); 
+
+	eventually_3v_T = eventually_true_var (time_step_reset, time_rt + time_step_reset, absolute_value ( sys-ref ) <= bound ) ;
+	eventually_3v_F = eventually_false_var (time_step_reset, time_rt + time_step_reset, absolute_value ( sys-ref ) <= bound ) ;
+
+	eval = if (trigger ) then (
+	       if (not eventually_3v_T) then (
+	     	  if (not eventually_3v_F)
+		   	then ( 0.5 ) --Unknown
+	     	   	else (0.0) --False
+		   )
+	     	else ( 1.0 ) --True
+	     )
+	     else (  --trigger not active
+	     	  if ((pre trigger) and ((pre eval)=0.5)) --weak view
+		  then (1.0)
+		  else (0.25)
+	     ); 
+
+	eval_out = eval -> if (trigger and (eval = 0.0 or pre eval_out = 0.0))
+		   	   then (0.0)
+		   	   else (eval) ;
+
+tel
+
+-- settling time verification.
+node settling_time_verification ( time_st_observ, time_step: int ; ref, sys : real ; const bound: real  ; const b : int ) returns (  trigger: bool ; eval: real) ;
+
+var 
+  resT,resF : bool ;
+  time_step_reset : int ;
+
+let
+	trigger = false -> 
+		-- the reference signal does not change
+		(pre ref = ref) and ( 
+		-- the trigger_on event has occurrend
+		( trigger_on_settling_time ( pre trigger, ref, sys, bound) or (pre trigger )) 
+	) and ( not ( time_step = b ) ) ;
+
+	time_step_reset = (0 -> if (not (pre ref = ref) ) then time_step else (pre time_step_reset) ); 
+
+	resT, resF = always_3v_var (time_st_observ + time_step_reset, b, absolute_value ( sys-ref ) <= bound );
+
+	-- return T outside of trigger, and T,F,U inside
+	eval = if (trigger) then (
+	        if (resT) then (1.0)
+	       	 else (
+		      if (resF) then (0.0)
+		      else (0.5)
+		      )
+		) else (1.0) ;
+	eval_out = eval -> if (trigger and (eval = 0.0 or pre eval_out = 0.0))
+		   	   then (0.0)
+		   	   else (eval) ;
+tel
+
+
+----------------------------------------------------------------------
+--                      Tracking properties                         --
+----------------------------------------------------------------------
+
+-- APE
+node APE_verification ( ref, sys : real ;  bound: real ; p_trigger: bool ) returns ( eval: bool ) ;
+
+let
+	eval = if (p_trigger) then absolute_value ( sys-ref ) <= bound 
+		else true;
+tel
+
+-- MPE
+-- in this version, the user may specify the values for which the mean is to be computed. This grants flexibility on when to do the evaluation.
+-- the number of values used in the calculation of the mean is hardcoded
+node MPE_verification_5 
+  ( ref, sys : real ;  bound: real ; p_trigger: bool ;
+  e_1 , e_2 , e_3 , e_4 , e_5 : real ; 
+  ) 
+  returns ( eval: bool ) ;
+
+var 
+  internal_clk : int ; 
+  ave : real ;
+
+nb_samples_i : int ;
+nb_samples_r : real ;
+
+let
+
+  nb_samples_i = 5 ;
+  nb_samples_r = 5.0 ;
+	internal_clk = if p_trigger then ( min(1 -> pre internal_clk + 1, nb_samples_i) ) else 1; --activate the count only if the trigger property is on
+	ave = (e_1 + e_2 + e_3 + e_4 + e_5 ) / nb_samples_r ;
+	eval = if ( internal_clk = nb_samples_i ) then ( absolute_value (ave) <= bound ) else ( true ) ; --do the verification only when the vector is full
+tel
+
+
+-- RPE
+-- in this version, the user may specify the values for which the mean is to be computed. This grants flexibility on when to do the evaluation.
+-- the number of values used in the calculation of the mean is hardcoded
+node RPE_verification_5 
+  ( ref, sys : real ;  bound: real ; p_trigger: bool ;
+  e_1 , e_2 , e_3 , e_4 , e_5 : real ) 
+  returns ( eval: bool ) ;
+
+var 
+  internal_clk: int ;
+  ave : real ;
+ nb_samples_r : real ;
+ nb_samples_i : int ;
+
+let
+ nb_samples_r = 5.0 ;
+ nb_samples_i  = 5 ;
+	internal_clk = if p_trigger then ( min(1 -> pre internal_clk + 1, nb_samples_i) ) else 1; --activate the count only if the trigger property is on
+	ave = (e_1 + e_2 + e_3 + e_4 + e_5 ) / nb_samples_r ;
+	-- the evaluation checks the compliance for each value of the array
+  eval = if ( internal_clk = nb_samples_i ) then ( 
+    (absolute_value (e_1 - ave) <= bound)  and  (absolute_value (e_2 - ave) <= bound) and  (absolute_value (e_3 - ave) <= bound) and  (absolute_value (e_4 - ave) <= bound) and  (absolute_value (e_5 - ave) <= bound)
+    ) else ( true ) ;
+tel
+
+-- PDE
+-- in this version, the user may specify the values for which the mean is to be computed. This grants flexibility on when to do the evaluation.
+-- the number of values used in the calculation of the mean is hardcoded
+node PDE_verification_5 
+  ( ref, sys : real ; bound: real ; p_trigger: bool ;  interval : int ;
+  e_11 , e_12 , e_13 , e_14 , e_15, e_21 , e_22 , e_23 , e_24 , e_25 : real ) 
+  returns ( eval: bool ) ;
+
+var 
+  internal_clk: int ;
+  ave1, ave2 : real ;
+ nb_samples_r : real ;
+ nb_samples_i : int  ;
+
+let
+ nb_samples_r = 5.0 ;
+ nb_samples_i = 5 ;
+	internal_clk = 1 -> if ( (not p_trigger) and (pre internal_clk = ( nb_samples_i + interval )) ) then 1  else ( pre internal_clk + 1 ); --reset counter every 2 intervals and activate the count only if the trigger property is on
+	ave1 = (e_11 + e_12 + e_13 + e_14 + e_15) / nb_samples_r ;
+  ave2 = (e_21 + e_22 + e_23 + e_24 + e_25) / nb_samples_r ;
+	eval = if ( internal_clk = nb_samples_i + interval ) then ( absolute_value( ave1 - ave2 ) <= bound ) else ( true ) ; --do the evaluation only when you have both results
+tel
+
+
+
+-- this version takes as input only the ref and sys, and stored the values in local variables of the node.
+-- the number of inputs is reduced, but there is no flexibility on the values used in the computation of the mean value.
+-- A trigger must be added in the node using this verification, so that the node it not run before the minimum number of instants (5) has passed
+
+node MPE_verification_5_simple
+  ( ref, sys : real ; bound: real ; p_trigger: bool ) 
+  returns ( eval: bool ) ;
+
+var 
+  internal_clk: int ;
+  ave : real ;
+  e_1 , e_2 , e_3 , e_4 , e_5 : real ;
+ nb_samples_r : real ;
+ nb_samples_i : int ;
+
+let
+ nb_samples_r = 5.0 ;
+ nb_samples_i = 5 ;
+  e_5 = 0.0 -> absolute_value (ref - sys) ;
+  e_4 = 0.0 -> pre e_5 ;
+  e_3 = 0.0 -> pre e_4 ;
+  e_2 = 0.0 -> pre e_3 ;
+  e_1 = 0.0 -> pre e_2 ;
+
+	internal_clk = if p_trigger then ( min(1 -> pre internal_clk + 1, nb_samples_i) ) else 1; --activate the count only if the trigger property is on
+	ave = (e_1 + e_2 + e_3 + e_4 + e_5 ) / nb_samples_r ;
+	eval = if ( internal_clk = nb_samples_i ) then ( absolute_value (ave) <= bound ) else ( true ) ; --do the verification only when the vector is full
+tel
+
+
+-- RPE
+node RPE_verification_5_simple
+  ( ref, sys : real ; bound: real ; p_trigger: bool ) 
+  returns ( eval: bool ) ;
+
+var 
+  internal_clk: int ;
+  ave : real ;
+  e_1 , e_2 , e_3 , e_4 , e_5 : real ;
+  nb_samples_r : real ;
+ nb_samples_i : int ;
+
+let
+ nb_samples_r = 5.0 ;
+ nb_samples_i = 5 ;
+  e_5 = 0.0 -> absolute_value (ref - sys) ;
+  e_4 = 0.0 -> pre e_5 ;
+  e_3 = 0.0 -> pre e_4 ;
+  e_2 = 0.0 -> pre e_3 ;
+  e_1 = 0.0 -> pre e_2 ;
+
+	internal_clk = if p_trigger then ( min(1 -> pre internal_clk + 1, nb_samples_i) ) else 1; --activate the count only if the trigger property is on
+	ave = (e_1 + e_2 + e_3 + e_4 + e_5 ) / nb_samples_r ;
+	-- the evaluation checks the compliance for each value of the array
+  eval = if ( internal_clk = nb_samples_i ) then ( 
+    (absolute_value (e_1 - ave) <= bound)  and  (absolute_value (e_2 - ave) <= bound) and  (absolute_value (e_3 - ave) <= bound) and  (absolute_value (e_4 - ave) <= bound) and  (absolute_value (e_5 - ave) <= bound)
+    ) else ( true ) ;
+tel
+
+-- PDE
+node PDE_verification_5_simple
+  ( ref, sys : real ; bound: real ; p_trigger: bool ; ) 
+  returns ( eval: bool ) ;
+
+var 
+  internal_clk: int ;
+  ave1, ave2 : real ;
+  e_11 , e_12 , e_13 , e_14 , e_15, e_21 , e_22 , e_23 , e_24 , e_25 : real ;
+ nb_samples_r : real ;
+ nb_samples_i : int ;
+interval: int;
+let
+ nb_samples_r = 5.0 ;
+ nb_samples_i = 5 ;
+ interval = 3 ;
+  e_25 = 0.0 -> absolute_value (ref - sys) ;
+  e_24 = 0.0 -> pre e_25 ;
+  e_23 = 0.0 -> pre e_24 ;
+  e_22 = 0.0 -> pre e_23 ;
+  e_21 = 0.0 -> pre e_22 ;
+  e_15 = 0.0 -> pre (pre (pre e_21 )) ; --skip 3 instants
+  e_14 = 0.0 -> pre e_15 ;
+  e_13 = 0.0 -> pre e_14 ;
+  e_12 = 0.0 -> pre e_13 ;
+  e_11 = 0.0 -> pre e_12 ;
+	
+  internal_clk = 1 -> if ( (not p_trigger) and (pre internal_clk = ( nb_samples_i + interval )) ) then 1  else ( pre internal_clk + 1 ); --reset counter every 2 intervals and activate the count only if the trigger property is on
+	ave1 = (e_11 + e_12 + e_13 + e_14 + e_15) / nb_samples_r ;
+  ave2 = (e_21 + e_22 + e_23 + e_24 + e_25) / nb_samples_r ;
+	eval = if ( internal_clk = nb_samples_i + interval ) then ( absolute_value( ave1 - ave2 ) <= bound ) else ( true ) ; --do the evaluation only when you have both results
+tel
