@@ -1,0 +1,272 @@
+
+----------------------------------------------------------------------
+--                            Useful Nodes                          --
+----------------------------------------------------------------------
+
+node kind2_times(x1: real ; x2: real ) returns (prod : real);
+let
+	prod = x1*x2 ;
+tel
+
+-- returns the absolute value of our signal
+node absolute_value (x: real) returns (abs: real)
+let
+    abs = if x >= 0.0 then x 
+          else -x;
+tel
+
+-- node for minimum between integers
+node min (a,b: int) returns (valeur_min: int);
+let
+    valeur_min =
+        if a <= b then a
+        else b;
+tel
+
+-- check if we are is inside an interval
+node timeab_tmp_var ( a,b: int) returns (internal_clk: int;
+     		       	    	 	  inside_time_interval: bool);
+let
+    internal_clk = min((0 -> 1 + pre internal_clk), b);
+    inside_time_interval = (internal_clk >= a) and not ((-1 -> pre internal_clk) = b);
+tel
+
+-- hide the internal clock in node timeab_tmp_var
+node timeab_var (a,b: int) returns (inside_time_interval: bool);
+var iclk: int; 
+let
+   iclk, inside_time_interval = timeab_tmp_var(a,b);
+tel
+
+-- exists quantifier
+node exist_var (inside_time_interval: bool ; prop: bool) returns (output: bool);
+let
+    output = (inside_time_interval and prop); 
+tel
+
+-- forall  quantifier
+node forall_a_var (inside_time_interval: bool ; prop: bool) returns (output: bool);
+let 
+    output = not(exist_var(inside_time_interval, not prop));
+tel
+
+----------------------------------------------------------------------
+--                            Temporal operators                    --
+----------------------------------------------------------------------
+
+-- since 
+node since (ev_ON,ev_OFF: bool) returns (out: bool);
+let
+	out = (ev_ON) -> (  ev_ON and (not ev_OFF) ) ;
+tel
+
+
+-- Eventually True:
+-- true when we are sure that property is satisfied
+node eventually_true_var ( a,b: int ; phi: bool)
+             returns (output_ev_true: bool);
+let
+   output_ev_true = exist_var (timeab_var (a, b), phi);
+tel
+
+-- Eventually False: 
+-- true when we are sure that property is not satisfied
+node eventually_false_var ( a,b: int ; phi: bool) 
+returns (output_ev_false: bool);
+var ev_time: int;
+let
+    ev_time = min(0 -> pre ev_time + 1, b);
+
+    output_ev_false = (ev_time = b) and 
+    (forall_a_var (timeab_var (a,b), not phi));
+tel
+
+
+----------------------------------------------------------------------
+--                            Trigger events                        --
+----------------------------------------------------------------------
+
+-- trigger ON event observer
+node trigger_on_rise_time ( p_trigger: bool ; ref, sys: real;  bound: real ) returns ( trigger: bool ) ;
+let
+	trigger = false -> ( not p_trigger ) and (absolute_value ( ref - sys ) > bound ) and
+	 ( absolute_value ( sys - ref )  < ( pre absolute_value ( sys - ref ) ) ) ;
+tel
+
+-- reset for trigger ON - necessary in monitoring
+node reset_tr_ON (ev_OFF: bool ; r: real) returns (reset_t_ON: bool) ;
+let
+  reset_t_ON = true -> (not ev_OFF) and ((not condition_R(r)) or (pre reset_t_ON)) ;
+tel
+
+-- trigger OFF event observer
+node trigger_off_rise_time ( p_trigger: bool ; ref, sys: real ;  bound: real ) returns ( trigger: bool ) ;
+let
+	trigger = false -> ( p_trigger ) and ( (pre absolute_value(ref - sys) ) < bound )  ;
+tel
+
+
+-- condition of constant derivative for reference signal
+node condition_R (r: real) returns (const_deriv: bool) ;
+var
+	r_p : real;
+let
+	r_p = 0.0 -> pre r ;
+	const_deriv = false -> ( (r - r_p) = (pre (r - r_p)) );
+tel
+
+-- general formulation of the trigger
+-- the argument of the since is enriched with conditions for the correct reset - needed in monitoring
+node trigger_general_rt (ev_ON,ev_OFF: bool; r: real) returns (trigger_out: bool) ;
+let
+	trigger_out = false ->  since( ((ev_ON and reset_tr_ON(ev_OFF,r)) or (pre trigger_out)), ev_OFF ) and ( condition_R(r) );
+tel
+
+
+----------------------------------------------------------------------
+--                            Performance Property                  --
+----------------------------------------------------------------------
+
+-- rise time verification.
+node rise_time_verification ( ref, sys : real ; bound : real ; time_rt, time_step : int ) returns (trigger: bool ; eval_out: real) ;
+
+var 
+  eventually_3v_T, eventually_3v_F, ev_ON, ev_OFF : bool ;
+  time_step_reset : int ;
+  	eval : real;
+let
+	-- trigger
+	ev_ON = trigger_on_rise_time ( pre trigger, ref, sys, bound) ;
+	ev_OFF = trigger_off_rise_time (pre trigger, ref, sys, bound) ;
+	trigger = false -> trigger_general_rt(ev_ON, ev_OFF, ref) ;
+
+	time_step_reset = 0 -> if (not (condition_R (ref))) then (time_step) else (pre time_step_reset) ; -- stores instant when reset happens
+
+	-- stisfaction formula
+	eventually_3v_T = eventually_true_var (time_step_reset, time_rt + time_step_reset, absolute_value ( sys-ref ) <= bound ) ;
+	eventually_3v_F = eventually_false_var (time_step_reset, time_rt + time_step_reset, absolute_value ( sys-ref ) <= bound ) ;
+
+	-- evaluation
+	eval = 0.25 -> if (trigger ) then (
+	       if (not eventually_3v_T) then (
+	     	  if (not eventually_3v_F)
+		   	then ( 0.5 ) --Unknown
+	     	   	else (0.0) --False
+		   )
+	     	else ( 1.0 ) --True
+	     )
+	     else (  --trigger not active
+	     	  if ((pre trigger) and ((pre eval)=0.5)) -- weak view
+		     then (1.0) 
+		  else (0.25) -- evaluation not relevant
+	     ); 
+
+	-- needed for monitoring - preserve immutability in the interval
+	eval_out = eval -> if (trigger and (eval = 0.0 or pre eval_out = 0.0))
+		   	   then (0.0)
+		   	   else (eval) ;
+
+tel
+
+
+----------------------------------------------------------------------
+--                            System Model                          --
+----------------------------------------------------------------------
+
+-- saturation
+node sat(a: real) returns (b: real);
+let
+b = if a>=1.0 then 1.0 else (if a<=-1.0 then -1.0 else a);
+tel
+
+-- controller dynamics
+node spring_mass_controller(y, y_d: real)
+returns (out_1: real);
+var x_1, x_2, in_1: real;
+let 
+in_1 = sat(y-y_d);
+x_1 = 0.0 -> 0.499 * pre x_1 - 0.05* pre x_2 + 1.0* pre in_1 ;
+x_2 = 0.0 -> 0.01*pre x_1 + 1.0*pre x_2 ;
+out_1 = 564.48 *x_1 + 0.0*x_2 - 1280.0 *in_1 ;
+tel 
+
+-- plant dynamics
+node spring_mass_plant(in,init_pos,init_speed : real) returns (out: real);
+var x_1, x_2: real;
+let
+  x_1 = init_pos -> 1.0*pre x_1 + 0.01*pre x_2 + 0.00005*in; -- position is initialized
+  -- x_2 = init_speed -> 0.01*in -> -0.01*pre x_1 + 1.0*pre x_2 + 0.01*in;
+  x_2 = 0.0 -> -0.01*pre x_1 + 1.0*pre x_2 + 0.01*in; 
+  -- out = 1.0*x_1+0.0*x_2;
+  out = x_1;
+tel
+
+-- closed-loop dynamics
+node full_system (y_d, init_pos,init_speed: real) returns (pos, force: real);
+
+let
+    force = 0.0 -> pre (spring_mass_controller(pos, y_d));
+    pos = init_pos -> spring_mass_plant(force, init_pos,init_speed);  -- no parentheses
+tel
+
+----------------------------------------------------------------------
+--                            Evaluation of Performance             --
+----------------------------------------------------------------------
+
+-- node that implements the system dynamics, and connects the monitor to the signals produced by the system
+-- commented between (* ... *) is the data-flow constract
+-- in the body of the node, the contract is translated into variables, to be read by CoCoSim and generate the SMT2 file
+
+node evaluation (ref: real; init_pos, init_speed: real) returns  ( eval_phi : bool);
+(*@contract
+assume (pre ref = ref) ; -- assumption 1
+assume (ref <= 2.0 and ref >= -2.0) ; -- assumption 2
+assume (init_pos <= 6.412831 and init_pos >= -6.412831) ; -- assumption 3
+assume (init_speed <= 6.911083 and init_speed >= -6.911083) ; -- assumption 4
+assume (absolute_value(init_pos - ref) >= 0.5) ; -- assumption 5
+guarantee (eval_phi = true) ; -- guarantee 1
+*)
+var
+	t_rt : int ;
+	bound_rt: real ;
+	start_pos,ref_signal,start_speed : real ;
+	pos, force, eval_rt: real ;
+	trigger_rt : bool ;
+	time_step : int ;
+	
+let
+	-- Encoding of the contract into local variables for CHC
+	-- bound the reference and make it constant
+	 ref_signal = ( if (ref > 1.0) then 1.0 else (
+		    if (ref < -1.0) then -1.0 else ref
+		  ) ) -> pre ref_signal;
+
+	-- bound the initial conditions and make it constant
+	start_pos = (if (absolute_value(ref_signal-init_pos)<0.5) then (
+	 	     	init_pos + 1.0) else (
+	 	   if (init_pos > 6.412831) then 6.412831 else (
+		    if (init_pos < -6.412831) then -6.412831 else init_pos
+		  )
+		  ) ) -> pre start_pos;
+	start_speed = 
+	 	   if (init_speed > 6.911083) then 6.911083 else (
+		    if (init_speed < -6.911083) then -6.911083 else init_speed
+		  ) -> pre start_speed;
+
+	-- dynamics of the system
+	pos, force = full_system(ref_signal, start_pos, start_speed) ;
+
+	-- specifications for the perofmance property
+	bound_rt = (absolute_value(start_pos-ref_signal))*0.15;
+	t_rt = 30 ;
+
+	-- counter of universal time
+	time_step = 0 -> (pre time_step) + 1 ;
+
+	-- verification of the property
+	trigger_rt, eval_rt = rise_time_verification(ref_signal, pos, bound_rt, t_rt , time_step);
+
+	-- property is never False
+	eval_phi = true -> not (eval_rt = 0.0);
+
+tel 
